@@ -68,8 +68,8 @@ export class App {
     this.lighting = null
     this.params = null
     this.cssRenderer = null  // CSS2DRenderer for debug labels
-    this.buildMode = false  // false = Move (camera only), true = Build (click to WFC)
-    this.mode = 'move' // 'move' | 'build' | 'pirate'
+    this.buildMode = false
+    this.mode = 'pirate'
     this.pirateShip = null
 
     if (App.instance != null) {
@@ -98,6 +98,7 @@ export class App {
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = PCFShadowMap
+    this.renderer.localClippingEnabled = true
 
     window.addEventListener('resize', this.onResize.bind(this))
 
@@ -137,12 +138,19 @@ export class App {
       await this.city.restoreFromState(savedState)
     }
 
-    // Pirate ship (hidden until pirate mode activated)
+    // If no saved state, auto-build the full map
+    if (!savedState || savedState.cells.length === 0) {
+      await this.city.autoBuild([
+        [0,0],[0,-1],[1,-1],[1,0],[0,1],[-1,0],[-1,-1],[-1,-2],[0,-2],[1,-2],[2,-1],[2,0],[2,1],[1,1],[0,2],[-1,1],[-2,1],[-2,0],[-2,-1]
+      ], { animate: false })
+    }
+
+    // Pirate ship (enabled by default)
     this.pirateShip = new PirateShip(this.scene)
     this.pirateShip.globalCells = this.city.globalCells
     this.pirateShip.grids = this.city.grids
     await this.pirateShip.init()
-    this.pirateShip.disable()
+    this.pirateShip.enable()
 
     // Water mask: swap tile materials to unlit B&W mask material for mask RT render
     this._savedMats = new Map()
@@ -159,9 +167,12 @@ export class App {
             grid.decorations.mesh.material = maskMat
           }
         }
+        // Swap pirate ship to black mask material (punches hole in water effects)
+        this.pirateShip?.setWaterMaskMode(true)
       } else {
         for (const [mesh, mat] of this._savedMats) mesh.material = mat
         this._savedMats.clear()
+        this.pirateShip?.setWaterMaskMode(false)
       }
     }
 
@@ -467,90 +478,17 @@ export class App {
     `
     document.body.appendChild(container)
 
-    // Mode toggle (Move | Build)
-    const toggle = document.createElement('div')
-    toggle.style.cssText = `
-      display: flex;
-      border-radius: 8px;
-      border: 1px solid rgba(255,255,255,0.3);
-      background: transparent;
-      overflow: hidden;
-      backdrop-filter: blur(4px);
-    `
-    const modeButtons = {}
-    const setMode = (key) => {
-      this.mode = key
-      this.buildMode = key === 'build'
-
-      // Enable/disable pirate ship (orbit controls stay enabled so user can spin camera)
-      if (key === 'pirate') {
-        this.pirateShip?.enable()
-      } else {
-        this.pirateShip?.disable()
-      }
-
-      for (const [k, btn] of Object.entries(modeButtons)) {
-        btn.style.background = k === key ? 'rgba(255,255,255,0.3)' : 'transparent'
-      }
-    }
-    for (const { key, label } of [{ key: 'move', label: 'Move' }, { key: 'build', label: 'Build' }, { key: 'pirate', label: 'Pirate' }]) {
-      const btn = document.createElement('button')
-      btn.textContent = label
-      btn.style.cssText = `
-        padding: 8px 13px;
-        border: none;
-        background: ${key === 'move' ? 'rgba(255,255,255,0.3)' : 'transparent'};
-        color: rgba(255,255,255,0.8);
-        font-family: 'Inter', sans-serif;
-        font-size: 12px;
-        cursor: pointer;
-        text-shadow: 0 1px 3px rgba(0,0,0,0.48);
-      `
-      btn.addEventListener('mouseenter', () => { toggle.style.borderColor = 'rgba(255,255,255,0.7)' })
-      btn.addEventListener('mouseleave', () => { toggle.style.borderColor = 'rgba(255,255,255,0.3)' })
-      btn.addEventListener('pointerdown', (e) => e.stopPropagation())
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation()
-        setMode(key)
-      })
-      modeButtons[key] = btn
-      toggle.appendChild(btn)
-      if (key !== 'pirate') {
-        const divider = document.createElement('div')
-        divider.style.cssText = 'width: 1px; background: rgba(255,255,255,0.3); align-self: stretch;'
-        toggle.appendChild(divider)
-      }
-    }
-    container.appendChild(toggle)
-
-    // Action buttons
-    const actions = [
-      { label: 'Build All', action: () => {
-        this.city.autoBuild([
-          [0,0],[0,-1],[1,-1],[1,0],[0,1],[-1,0],[-1,-1],[-1,-2],[0,-2],[1,-2],[2,-1],[2,0],[2,1],[1,1],[0,2],[-1,1],[-2,1],[-2,0],[-2,-1]
-        ])
-      }},
-      { label: 'Clear All', action: () => {
-        this.city.reset()
-        this.city.setHelpersVisible(this.params.debug.hexGrid)
-        this.perspCamera.position.set(0, 100, 58.5)
-        this.controls.target.set(0, 1, 0)
-        this.controls.update()
-      }},
-    ]
-
-    for (const { label, action } of actions) {
-      const btn = document.createElement('button')
-      btn.textContent = label
-      btn.style.cssText = btnBase
-      addHover(btn)
-      btn.addEventListener('pointerdown', (e) => e.stopPropagation())
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation()
-        action()
-      })
-      container.appendChild(btn)
-    }
+    // Rebuild button — resets and builds a fresh map
+    const rebuildBtn = document.createElement('button')
+    rebuildBtn.textContent = 'Rebuild'
+    rebuildBtn.style.cssText = btnBase
+    addHover(rebuildBtn)
+    rebuildBtn.addEventListener('pointerdown', (e) => e.stopPropagation())
+    rebuildBtn.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.rebuildMap()
+    })
+    container.appendChild(rebuildBtn)
 
     // Settings toggle
     const guiBtn = document.createElement('button')
@@ -574,6 +512,18 @@ export class App {
       updateGuiBtn()
     })
     container.appendChild(guiBtn)
+  }
+
+  async rebuildMap() {
+    const seed = Math.floor(Math.random() * 100000)
+    setSeed(seed)
+    this.city._currentSeed = seed
+    console.log(`%c[REBUILD] New seed: ${seed}`, 'color: blue')
+
+    await this.city.reset()
+    await this.city.autoBuild([
+      [0,0],[0,-1],[1,-1],[1,0],[0,1],[-1,0],[-1,-1],[-1,-2],[0,-2],[1,-2],[2,-1],[2,0],[2,1],[1,1],[0,2],[-1,1],[-2,1],[-2,0],[-2,-1]
+    ])
   }
 
   onResize(_e, toSize) {
@@ -643,6 +593,10 @@ export class App {
     for (const grid of this.city.grids.values()) {
       if (grid.hexMesh) maskObjects.push(grid.hexMesh)
       if (grid.decorations?.mesh) maskObjects.push(grid.decorations.mesh)
+    }
+    // Include pirate ship in water mask so water effects don't render on top of it
+    if (this.pirateShip?.model?.visible) {
+      maskObjects.push(this.pirateShip.model)
     }
     postFX.setWaterMaskObjects(maskObjects)
     postFX.setOverlayObjects(this.city.getOverlayObjects())

@@ -1,17 +1,19 @@
-import { Vector3, MathUtils } from 'three/webgpu'
+import { Vector3, MathUtils, Plane, MeshBasicNodeMaterial } from 'three/webgpu'
 import { GLTFLoader } from 'three/examples/jsm/Addons.js'
 import { TILE_LIST } from './hexmap/HexTileData.js'
 import { worldToOffset, getWorldPos } from './hexmap/HexGridConnector.js'
 import { offsetToCube, cubeKey, cubeToOffset } from './hexmap/HexWFCCore.js'
 
 const WATER_Y = 0.92
-const SHIP_SPEED = 15
-const SHIP_TURN_SPEED = 3
+const SHIP_MAX_SPEED = 5     // top speed (world units/sec)
+const SHIP_ACCEL = 1.5       // how fast the ship builds speed
+const SHIP_DECEL = 0.6       // natural drag when not thrusting
+const SHIP_TURN_SPEED = 1.2  // max turn rate at full speed (rad/sec)
 const BOB_SPEED = 1.5
 const BOB_AMOUNT = 0.08
-const ROCK_SPEED = 0.7   // idle rocking frequency
-const ROCK_AMOUNT = 0.06 // idle rocking amplitude (radians)
-const SLIDE_SPEED = 5    // speed at which grounded ship slides toward water
+const ROCK_SPEED = 0.7       // idle rocking frequency
+const ROCK_AMOUNT = 0.06     // idle rocking amplitude (radians)
+const SLIDE_SPEED = 3        // speed at which grounded ship slides toward water
 
 // Tile names that count as navigable water
 const WATER_TILE_NAMES = new Set(['WATER', 'COAST_B', 'COAST_C', 'COAST_D'])
@@ -49,16 +51,44 @@ export class PirateShip {
     const loader = new GLTFLoader()
     const gltf = await loader.loadAsync('./assets/models/sail-ship.glb')
     this.model = gltf.scene
+
+    // Clipping plane at water surface — clips hull below waterline
+    this._waterClipPlane = new Plane(new Vector3(0, 1, 0), -WATER_Y)
+    // Black material for water mask pass (punches hole in water effects)
+    this._maskMaterial = new MeshBasicNodeMaterial({ color: 0x000000 })
+    this._maskMaterial.clippingPlanes = [this._waterClipPlane]
+    this._savedMaterials = new Map()
+
     this.model.traverse((child) => {
       if (child.isMesh) {
         child.castShadow = true
         child.receiveShadow = true
+        // Clip at water surface so hull below waterline is hidden
+        child.material.clippingPlanes = [this._waterClipPlane]
       }
     })
     // Scale to fit hex tiles — adjust as needed
     this.model.scale.setScalar(0.5)
     this.model.position.copy(this.position)
     this.scene.add(this.model)
+  }
+
+  /**
+   * Swap ship materials to black for water mask pass, or restore originals.
+   */
+  setWaterMaskMode(enabled) {
+    if (!this.model) return
+    if (enabled) {
+      this.model.traverse((child) => {
+        if (child.isMesh) {
+          this._savedMaterials.set(child, child.material)
+          child.material = this._maskMaterial
+        }
+      })
+    } else {
+      for (const [mesh, mat] of this._savedMaterials) mesh.material = mat
+      this._savedMaterials.clear()
+    }
   }
 
   /**
@@ -206,24 +236,37 @@ export class PirateShip {
     turnInput = MathUtils.clamp(turnInput, -1, 1)
     thrustInput = MathUtils.clamp(thrustInput, -1, 1)
 
-    // Always allow turning (even when aground, to reverse out)
-    this.heading += turnInput * SHIP_TURN_SPEED * dt
+    // Ship-like physics: rudder only works when moving
+    // Turn rate scales with speed — can't steer a stationary ship
+    const speedRatio = Math.abs(this.speed) / SHIP_MAX_SPEED
+    const effectiveTurn = turnInput * SHIP_TURN_SPEED * Math.min(speedRatio * 2, 1) * dt
+    this.heading -= effectiveTurn  // negated to fix left/right
+
+    // Acceleration / deceleration with momentum
+    if (thrustInput !== 0) {
+      // Thrust: gradually build speed
+      this.speed += thrustInput * SHIP_ACCEL * dt
+    } else {
+      // No input: drag slows the ship down gradually
+      this.speed *= (1 - SHIP_DECEL * dt)
+    }
+
+    // Clamp speed
+    this.speed = MathUtils.clamp(this.speed, -SHIP_MAX_SPEED * 0.3, SHIP_MAX_SPEED)
+    if (Math.abs(this.speed) < 0.02) this.speed = 0
 
     // Compute candidate position
-    const targetSpeed = thrustInput * SHIP_SPEED
-    const candidateSpeed = MathUtils.lerp(this.speed, targetSpeed, 4 * dt)
-    const nx = this.position.x + Math.sin(this.heading) * candidateSpeed * dt
-    const nz = this.position.z + Math.cos(this.heading) * candidateSpeed * dt
+    const nx = this.position.x + Math.sin(this.heading) * this.speed * dt
+    const nz = this.position.z + Math.cos(this.heading) * this.speed * dt
 
     if (this._isWaterAt(nx, nz)) {
       // Clear water — sail freely
       this.position.x = nx
       this.position.z = nz
-      this.speed = candidateSpeed
       this._aground = false
     } else {
       // Land — run aground: kill forward speed, slide toward nearest water
-      this.speed = MathUtils.lerp(this.speed, 0, 8 * dt)
+      this.speed *= (1 - 4 * dt)
       this._aground = true
 
       const waterTarget = this._findNearestWater()
@@ -239,8 +282,6 @@ export class PirateShip {
       }
     }
 
-    if (Math.abs(this.speed) < 0.01) this.speed = 0
-
     // Bob on water
     this.position.y = WATER_Y + Math.sin(this._time * BOB_SPEED) * BOB_AMOUNT
 
@@ -249,8 +290,8 @@ export class PirateShip {
 
     // Idle side-to-side rocking (always present, slower than bob)
     const idleRock = Math.sin(this._time * ROCK_SPEED) * ROCK_AMOUNT
-    // Extra roll from turning
-    const turnRoll = -turnInput * 0.05 * Math.min(Math.abs(this.speed) / SHIP_SPEED, 1)
+    // Heel into turns — proportional to turn rate and speed
+    const turnRoll = effectiveTurn * 8
     this.model.rotation.z = idleRock + turnRoll
 
     // Gentle pitch from bobbing
