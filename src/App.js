@@ -8,6 +8,7 @@ import {
   Plane,
   WebGPURenderer,
   PCFShadowMap,
+  MathUtils,
 } from 'three/webgpu'
 import { OrbitControls, CSS2DRenderer } from 'three/examples/jsm/Addons.js'
 import Stats from 'three/addons/libs/stats.module.js'
@@ -15,11 +16,13 @@ import WebGPU from 'three/examples/jsm/capabilities/WebGPU.js'
 import { Pointer } from './lib/Pointer.js'
 import { GUIManager } from './GUI.js'
 import { HexMap } from './hexmap/HexMap.js'
+import { PirateShip } from './PirateShip.js'
 import { Lighting } from './Lighting.js'
 import { PostFX } from './PostFX.js'
 import { WavesMask } from './hexmap/effects/WavesMask.js'
 import { setSeed } from './SeededRandom.js'
 import { LEVELS_COUNT } from './hexmap/HexTileData.js'
+import { loadFromSession } from './hexmap/MapStorage.js'
 import gsap from 'gsap'
 
 // Global status update function
@@ -66,6 +69,8 @@ export class App {
     this.params = null
     this.cssRenderer = null  // CSS2DRenderer for debug labels
     this.buildMode = false  // false = Move (camera only), true = Build (click to WFC)
+    this.mode = 'move' // 'move' | 'build' | 'pirate'
+    this.pirateShip = null
 
     if (App.instance != null) {
       console.warn('App instance already exists')
@@ -80,9 +85,11 @@ export class App {
       return
     }
 
-    const seed = Math.floor(Math.random() * 100000)
+    // Check for saved map state in sessionStorage
+    const savedState = loadFromSession()
+    const seed = savedState ? savedState.seed : Math.floor(Math.random() * 100000)
     setSeed(seed)
-    console.log(`%c[SEED] ${seed}`, 'color: black')
+    console.log(`%c[SEED] ${seed}${savedState ? ' (restored)' : ''}`, 'color: black')
     console.log(`%c[LEVELS] ${LEVELS_COUNT}`, 'color: black')
     this.renderer = new WebGPURenderer({ canvas: this.canvas, antialias: true })
     await this.renderer.init()
@@ -121,7 +128,21 @@ export class App {
     this.city.coveMaskTexture = this.wavesMask.coveTexture
 
     await this.lighting.init()
+    this.city._currentSeed = seed
     await this.city.init()
+
+    // Restore saved map state if available (only if there are populated cells)
+    if (savedState && savedState.cells.length > 0) {
+      console.log(`%c[RESTORE] Restoring ${savedState.cells.length} cells from session`, 'color: green')
+      await this.city.restoreFromState(savedState)
+    }
+
+    // Pirate ship (hidden until pirate mode activated)
+    this.pirateShip = new PirateShip(this.scene)
+    this.pirateShip.globalCells = this.city.globalCells
+    this.pirateShip.grids = this.city.grids
+    await this.pirateShip.init()
+    this.pirateShip.disable()
 
     // Water mask: swap tile materials to unlit B&W mask material for mask RT render
     this._savedMats = new Map()
@@ -458,12 +479,21 @@ export class App {
     `
     const modeButtons = {}
     const setMode = (key) => {
+      this.mode = key
       this.buildMode = key === 'build'
+
+      // Enable/disable pirate ship (orbit controls stay enabled so user can spin camera)
+      if (key === 'pirate') {
+        this.pirateShip?.enable()
+      } else {
+        this.pirateShip?.disable()
+      }
+
       for (const [k, btn] of Object.entries(modeButtons)) {
         btn.style.background = k === key ? 'rgba(255,255,255,0.3)' : 'transparent'
       }
     }
-    for (const { key, label } of [{ key: 'move', label: 'Move' }, { key: 'build', label: 'Build' }]) {
+    for (const { key, label } of [{ key: 'move', label: 'Move' }, { key: 'build', label: 'Build' }, { key: 'pirate', label: 'Pirate' }]) {
       const btn = document.createElement('button')
       btn.textContent = label
       btn.style.cssText = `
@@ -485,7 +515,7 @@ export class App {
       })
       modeButtons[key] = btn
       toggle.appendChild(btn)
-      if (key === 'move') {
+      if (key !== 'pirate') {
         const divider = document.createElement('div')
         divider.style.cssText = 'width: 1px; background: rgba(255,255,255,0.3); align-self: stretch;'
         toggle.appendChild(divider)
@@ -575,6 +605,18 @@ export class App {
 
     timer.update()
     const dt = timer.getDelta()
+
+    // Update pirate ship and follow camera in pirate mode
+    if (this.mode === 'pirate' && this.pirateShip) {
+      this.pirateShip.update(dt)
+      const shipPos = this.pirateShip.position
+      // Move orbit target to ship so user can orbit/spin around it
+      const delta = new Vector3().subVectors(shipPos, controls.target)
+      delta.y = 0 // keep target at water level
+      controls.target.add(delta.multiplyScalar(MathUtils.clamp(5 * dt, 0, 1)))
+      // Shift camera by the same delta to keep the same orbit distance/angle
+      this.camera.position.add(delta)
+    }
 
     controls.update(dt)
     // Clamp target Y to prevent panning under the city

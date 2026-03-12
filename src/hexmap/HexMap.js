@@ -29,6 +29,7 @@ import { initGlobalTreeNoise, rebuildNoiseTables, Decorations } from './Decorati
 import { Water } from './effects/Water.js'
 import { random, setSeed } from '../SeededRandom.js'
 import { Sounds } from '../lib/Sounds.js'
+import { saveToSession, clearSession } from './MapStorage.js'
 
 const LEVEL_HEIGHT = 0.5
 const TILE_SURFACE = 1
@@ -116,6 +117,9 @@ export class HexMap {
 
     // Convenience alias
     this.hexWfcRules = null
+
+    // Seed tracking for session persistence
+    this._currentSeed = null
   }
 
   async init() {
@@ -136,6 +140,69 @@ export class HexMap {
     await this.createGrid(0, 0)
 
     this.scene.add(this.tileLabels)
+  }
+
+  /**
+   * Restore map from a previously saved state (skips WFC solving)
+   * @param {object} state - Deserialized state from MapStorage
+   */
+  async restoreFromState(state) {
+    this._waterSideIndex = state.waterSideIndex
+
+    // Group saved cells by gridKey for efficient per-grid restoration
+    const cellsByGrid = new Map()
+    for (const cell of state.cells) {
+      if (!cellsByGrid.has(cell.gridKey)) cellsByGrid.set(cell.gridKey, [])
+      cellsByGrid.get(cell.gridKey).push(cell)
+    }
+
+    // Create and populate grids in order: populated first, then placeholders
+    const populated = state.grids.filter(g => g.state === 'populated')
+    const placeholders = state.grids.filter(g => g.state === 'placeholder')
+
+    for (const gridInfo of populated) {
+      const grid = await this.createGrid(gridInfo.x, gridInfo.z)
+      const gridKey = getGridKey(gridInfo.x, gridInfo.z)
+      const tiles = cellsByGrid.get(gridKey) || []
+
+      // Add tiles to globalCells before populating the grid
+      this.addToGlobalCells(gridKey, tiles)
+
+      // Populate the grid visuals (no animation, no WFC solve)
+      await grid.populateFromCubeResults(tiles, tiles, grid.globalCenterCube, {
+        animate: false,
+      })
+      grid.setHelperVisible(this.helpersVisible)
+    }
+
+    // Also restore cells that belong to non-grid keys (e.g. 'local-wfc', 'rebuild-wfc')
+    for (const [gridKey, tiles] of cellsByGrid) {
+      if (!state.grids.some(g => getGridKey(g.x, g.z) === gridKey)) {
+        this.addToGlobalCells(gridKey, tiles)
+      }
+    }
+
+    for (const gridInfo of placeholders) {
+      const gridKey = getGridKey(gridInfo.x, gridInfo.z)
+      if (!this.grids.has(gridKey)) {
+        await this.createGrid(gridInfo.x, gridInfo.z)
+      }
+    }
+
+    // Update placeholder triangles to reflect populated neighbors
+    this.updateAllPlaceholderTriangles()
+    this.pruneInvalidPlaceholders()
+
+    log(`[RESTORE] Restored ${populated.length} grids, ${state.cells.length} cells`, 'color: green')
+  }
+
+  /**
+   * Save the current map state to sessionStorage
+   */
+  saveState() {
+    const seed = this._currentSeed
+    if (seed == null) return
+    saveToSession(this, seed)
   }
 
   /**
@@ -738,6 +805,9 @@ export class HexMap {
     // Notify listeners that tiles changed (for coast mask rebuild)
     // Pass animationDone promise so caller can wait for drop animation to finish
     this.onTilesChanged?.(grid.animationDone)
+
+    // Persist map state to sessionStorage
+    this.saveState()
 
     return animDuration
   }
@@ -1584,6 +1654,9 @@ export class HexMap {
 
     // Clear waves mask (no tiles to render)
     this.onTilesChanged?.(Promise.resolve())
+
+    // Clear saved session state
+    clearSession()
   }
 
   async regenerate(options = {}) {
