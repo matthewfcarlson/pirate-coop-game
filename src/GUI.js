@@ -1,4 +1,5 @@
 import { GUI } from 'three/addons/libs/lil-gui.module.min.js'
+import { Sounds } from './lib/Sounds.js'
 import { setTreeNoiseFrequency, setTreeThreshold, setBuildingNoiseFrequency, setBuildingThreshold } from './hexmap/Decorations.js'
 import { HexTile } from './hexmap/HexTiles.js'
 
@@ -191,7 +192,7 @@ export class GUIManager {
       [0,0],[0,-1],[1,-1],[1,0],[0,1],[-1,0],[-1,-1],[-1,-2],[0,-2],[1,-2],[2,-1],[2,0],[2,1],[1,1],[0,2],[-1,1],[-2,1],[-2,0],[-2,-1]
     ]) }, 'autoBuild').name('Build All (Modular)')
     gui.add({ buildAll: () => {
-      import('./lib/Sounds.js').then(({ Sounds }) => Sounds.play('pop', 1.0, 0, 0.3))
+      Sounds.play('pop', 1.0, 0, 0.3)
       app.city.populateAllGrids()
     } }, 'buildAll').name('Build All (Single Solve)')
     gui.add({ benchmark: () => app.city.runBenchmark(50) }, 'benchmark').name('Modular (50 runs)')
@@ -440,6 +441,7 @@ export class GUIManager {
 
     // Hex helper visibility
     app.city.setHelpersVisible(params.debug.hexGrid)
+    app.city.setOutlinesVisible(params.roads.showOutlines)
 
     // Level bias
     if (app.city._levelBias) app.city._levelBias.value = params.debug.levelBias

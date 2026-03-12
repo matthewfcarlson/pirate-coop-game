@@ -560,6 +560,13 @@ export class App {
     if (this.mode === 'pirate' && this.pirateShip) {
       this.pirateShip.update(dt)
       const shipPos = this.pirateShip.position
+      // Update wake shader uniforms
+      if (this.city._wakeX) {
+        this.city._wakeX.value = shipPos.x
+        this.city._wakeZ.value = shipPos.z
+        this.city._wakeHeading.value = this.pirateShip.heading
+        this.city._wakeSpeed.value = Math.min(Math.abs(this.pirateShip.speed) / 5, 1)
+      }
       // Move orbit target to ship so user can orbit/spin around it
       const delta = new Vector3().subVectors(shipPos, controls.target)
       delta.y = 0 // keep target at water level

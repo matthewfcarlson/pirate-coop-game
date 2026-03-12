@@ -1003,7 +1003,8 @@ export class HexMap {
     } else {
       for (const grid of existingToShow) {
         grid?.placeholder?.show()
-        if (grid?.outline) grid.outline.visible = true
+        // Only show outline for placeholder grids
+        if (grid?.outline && grid.state === HexGridState.PLACEHOLDER) grid.outline.visible = true
       }
     }
   }
@@ -1227,7 +1228,6 @@ export class HexMap {
       this._autoBuilding = false
       this._releaseWfcLock()
       log('[BUILD ALL] WFC FAILED', 'color: red')
-      const { Sounds } = await import('../lib/Sounds.js')
       Sounds.play('incorrect')
       await setStatusAsync('[BUILD ALL] WFC FAILED')
       for (const grid of this.grids.values()) {
@@ -1746,6 +1746,10 @@ export class HexMap {
   get _coveFade() { return this.water?._coveFade }
   get _coveThin() { return this.water?._coveThin }
   get _coveShow() { return this.water?._coveShow }
+  get _wakeX() { return this.water?._wakeX }
+  get _wakeZ() { return this.water?._wakeZ }
+  get _wakeHeading() { return this.water?._wakeHeading }
+  get _wakeSpeed() { return this.water?._wakeSpeed }
 
   // === Accessors for backward compatibility ===
 

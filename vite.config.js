@@ -21,6 +21,15 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          three: ['three', 'three/webgpu', 'three/tsl'],
+          vendor: ['howler', 'gsap'],
+        },
+      },
+    },
   },
   esbuild: {
     target: 'esnext',

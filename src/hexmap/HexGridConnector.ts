@@ -4,6 +4,7 @@
  */
 
 import { offsetToCube, cubeToOffset, localToGlobalCoords } from './HexWFCCore.js'
+import type { CubeCoord } from './HexWFCCore.js'
 
 // Re-export for consumers that still import from here
 export { offsetToCube, cubeToOffset, localToGlobalCoords }
@@ -24,13 +25,15 @@ export const GridDirection = {
   S: 3,
   SW: 4,
   NW: 5,
-}
+} as const
+
+export type GridDirectionValue = typeof GridDirection[keyof typeof GridDirection]
 
 /**
  * Get the opposite grid direction
  */
-export function getOppositeDirection(dir) {
-  const opposites = {
+export function getOppositeDirection(dir: GridDirectionValue): GridDirectionValue {
+  const opposites: Record<GridDirectionValue, GridDirectionValue> = {
     [GridDirection.N]: GridDirection.S,
     [GridDirection.NE]: GridDirection.SW,
     [GridDirection.SE]: GridDirection.NW,
@@ -44,29 +47,34 @@ export function getOppositeDirection(dir) {
 /**
  * Get grid key from coordinates
  */
-export function getGridKey(gridX, gridZ) {
+export function getGridKey(gridX: number, gridZ: number): string {
   return `${gridX},${gridZ}`
 }
 
 /**
  * Parse grid key to coordinates
  */
-export function parseGridKey(key) {
+export function parseGridKey(key: string): { x: number; z: number } {
   const [x, z] = key.split(',').map(Number)
   return { x, z }
+}
+
+interface HexOffset2D {
+  dx: number
+  dz: number
 }
 
 /**
  * Get adjacent grid key in a direction
  * For flat-top hex grid, the coordinate offsets depend on column parity (odd-q system)
  */
-export function getAdjacentGridKey(currentKey, direction) {
+export function getAdjacentGridKey(currentKey: string, direction: GridDirectionValue): string {
   const { x, z } = parseGridKey(currentKey)
 
   // Flat-top hex: odd-q offset coordinates
   const isOddCol = Math.abs(x) % 2 === 1
 
-  const offsets = isOddCol ? {
+  const offsets: Record<GridDirectionValue, HexOffset2D> = isOddCol ? {
     [GridDirection.N]:  { dx: 0, dz: -1 },
     [GridDirection.NE]: { dx: 1, dz: 0 },
     [GridDirection.SE]: { dx: 1, dz: 1 },
@@ -96,10 +104,15 @@ export function getAdjacentGridKey(currentKey, direction) {
 const HEX_WIDTH = 2
 const HEX_HEIGHT = 2 / Math.sqrt(3) * 2
 
+interface WorldPos {
+  x: number
+  z: number
+}
+
 /**
  * Get world position for a tile at offset coordinates
  */
-export function getWorldPos(offsetCol, offsetRow) {
+export function getWorldPos(offsetCol: number, offsetRow: number): WorldPos {
   const x = offsetCol * HEX_WIDTH + (Math.abs(offsetRow) % 2) * HEX_WIDTH * 0.5
   const z = offsetRow * HEX_HEIGHT * 0.75
   return { x, z }
@@ -108,7 +121,7 @@ export function getWorldPos(offsetCol, offsetRow) {
 /**
  * Convert world position to offset coordinates (inverse of getWorldPos)
  */
-export function worldToOffset(worldX, worldZ) {
+export function worldToOffset(worldX: number, worldZ: number): { col: number; row: number } {
   const row = Math.round(worldZ / (HEX_HEIGHT * 0.75))
   const stagger = (Math.abs(row) % 2) * HEX_WIDTH * 0.5
   const col = Math.round((worldX - stagger) / HEX_WIDTH)
@@ -118,7 +131,7 @@ export function worldToOffset(worldX, worldZ) {
 /**
  * Convert a grid's world offset to its center in global cube coordinates
  */
-export function worldOffsetToGlobalCube(worldOffset) {
+export function worldOffsetToGlobalCube(worldOffset: WorldPos): CubeCoord {
   const offset = worldToOffset(worldOffset.x, worldOffset.z)
   return offsetToCube(offset.col, offset.row)
 }
@@ -126,7 +139,12 @@ export function worldOffsetToGlobalCube(worldOffset) {
 /**
  * Calculate world offset for a new grid in a given direction
  */
-export function getGridWorldOffset(gridRadius, direction, hexWidth = 2, hexHeight = null) {
+export function getGridWorldOffset(
+  gridRadius: number,
+  direction: GridDirectionValue,
+  hexWidth: number = 2,
+  hexHeight: number | null = null,
+): WorldPos {
   if (!hexHeight) {
     hexHeight = 2 / Math.sqrt(3) * 2
   }
@@ -136,7 +154,7 @@ export function getGridWorldOffset(gridRadius, direction, hexWidth = 2, hexHeigh
   const gridH = d * hexHeight * 0.75
   const half = hexWidth * 0.5
 
-  const offsets = {
+  const offsets: Record<GridDirectionValue, WorldPos> = {
     [GridDirection.N]:  { x: half, z: -gridH },
     [GridDirection.S]:  { x: -half, z: gridH },
     [GridDirection.NE]: { x: gridW * 0.75 + half * 0.5, z: -gridH * 0.5 + half * 0.866 },
@@ -151,7 +169,7 @@ export function getGridWorldOffset(gridRadius, direction, hexWidth = 2, hexHeigh
 /**
  * Convert pointy-top hex offset coordinates to world position
  */
-export function pointyTopHexToWorld(col, row, w, h) {
+export function pointyTopHexToWorld(col: number, row: number, w: number, h: number): WorldPos {
   const x = col * w + (Math.abs(row) % 2) * w * 0.5
   const z = row * h * 0.75
   return { x, z }
@@ -160,7 +178,7 @@ export function pointyTopHexToWorld(col, row, w, h) {
 /**
  * Convert flat-top hex offset coordinates to world position
  */
-export function flatTopHexToWorld(col, row, w, h) {
+export function flatTopHexToWorld(col: number, row: number, w: number, h: number): WorldPos {
   const x = col * w * 0.75
   const z = row * h + (Math.abs(col) % 2) * h * 0.5
   return { x, z }

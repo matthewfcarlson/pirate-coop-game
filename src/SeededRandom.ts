@@ -3,14 +3,14 @@
  * Allows deterministic map generation for debugging
  */
 
-let rng = Math.random
-let currentSeed = null
+let rng: () => number = Math.random
+let currentSeed: number | null = null
 
 /**
  * Set the global RNG seed
- * @param {number|null} seed - Seed value, or null/0 for Math.random
+ * @param seed - Seed value, or null for Math.random
  */
-export function setSeed(seed) {
+export function setSeed(seed: number | null): void {
   currentSeed = seed
   if (seed === null) {
     rng = Math.random
@@ -30,21 +30,21 @@ export function setSeed(seed) {
 /**
  * Get a random number [0, 1)
  */
-export function random() {
+export function random(): number {
   return rng()
 }
 
 /**
  * Get current seed value
  */
-export function getSeed() {
+export function getSeed(): number | null {
   return currentSeed
 }
 
 /**
  * In-place Fisher-Yates shuffle using seeded RNG
  */
-export function shuffle(arr) {
+export function shuffle<T>(arr: T[]): T[] {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(random() * (i + 1))
     ;[arr[i], arr[j]] = [arr[j], arr[i]]

@@ -4,14 +4,43 @@
 
 const STORAGE_KEY = 'hexmap-state'
 
+export interface SerializedCell {
+  q: number
+  r: number
+  s: number
+  type: number
+  rotation: number
+  level: number
+  gridKey: string
+}
+
+export interface SerializedGrid {
+  key: string
+  x: number
+  z: number
+  state: string
+}
+
+export interface SerializedMapState {
+  version: number
+  seed: number
+  waterSideIndex: number | null
+  grids: SerializedGrid[]
+  cells: SerializedCell[]
+}
+
+/** Minimal interface for the parts of HexMap we need to serialize */
+interface SerializableHexMap {
+  grids: Map<string, { gridCoords: { x: number; z: number }; state: string }>
+  globalCells: Map<string, SerializedCell>
+  _waterSideIndex: number | null
+}
+
 /**
  * Extract serializable state from a HexMap instance
- * @param {import('./HexMap.js').HexMap} hexMap
- * @param {number} seed - The current RNG seed
- * @returns {object} Serializable state object
  */
-export function serializeMap(hexMap, seed) {
-  const grids = []
+export function serializeMap(hexMap: SerializableHexMap, seed: number): SerializedMapState {
+  const grids: SerializedGrid[] = []
   for (const [key, grid] of hexMap.grids) {
     grids.push({
       key,
@@ -22,7 +51,7 @@ export function serializeMap(hexMap, seed) {
   }
 
   // Convert globalCells Map to array of plain objects
-  const cells = []
+  const cells: SerializedCell[] = []
   for (const [, cell] of hexMap.globalCells) {
     cells.push({
       q: cell.q,
@@ -46,10 +75,8 @@ export function serializeMap(hexMap, seed) {
 
 /**
  * Save map state to sessionStorage
- * @param {import('./HexMap.js').HexMap} hexMap
- * @param {number} seed
  */
-export function saveToSession(hexMap, seed) {
+export function saveToSession(hexMap: SerializableHexMap, seed: number): void {
   try {
     const state = serializeMap(hexMap, seed)
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state))
@@ -60,13 +87,12 @@ export function saveToSession(hexMap, seed) {
 
 /**
  * Load map state from sessionStorage
- * @returns {object|null} Saved state or null if none exists
  */
-export function loadFromSession() {
+export function loadFromSession(): SerializedMapState | null {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY)
     if (!raw) return null
-    const state = JSON.parse(raw)
+    const state = JSON.parse(raw) as SerializedMapState
     if (state.version !== 1) return null
     return state
   } catch (e) {
@@ -78,6 +104,6 @@ export function loadFromSession() {
 /**
  * Clear saved map state from sessionStorage
  */
-export function clearSession() {
+export function clearSession(): void {
   sessionStorage.removeItem(STORAGE_KEY)
 }

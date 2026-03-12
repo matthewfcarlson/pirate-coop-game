@@ -1,8 +1,10 @@
-import { Vector3, MathUtils, Plane, MeshBasicNodeMaterial } from 'three/webgpu'
+import { Vector3, MathUtils, Plane, MeshBasicNodeMaterial, Scene, Group, Material } from 'three/webgpu'
 import { GLTFLoader } from 'three/examples/jsm/Addons.js'
+import { VirtualJoystick } from './VirtualJoystick.js'
 import { TILE_LIST } from './hexmap/HexTileData.js'
 import { worldToOffset, getWorldPos } from './hexmap/HexGridConnector.js'
 import { offsetToCube, cubeKey, cubeToOffset } from './hexmap/HexWFCCore.js'
+import type { SerializedCell } from './hexmap/MapStorage.js'
 
 const WATER_Y = 0.92
 const SHIP_MAX_SPEED = 5     // top speed (world units/sec)
@@ -18,8 +20,33 @@ const SLIDE_SPEED = 3        // speed at which grounded ship slides toward water
 // Tile names that count as navigable water
 const WATER_TILE_NAMES = new Set(['WATER', 'COAST_B', 'COAST_C', 'COAST_D'])
 
-function isWaterTile(tileName) {
+function isWaterTile(tileName: string): boolean {
   return WATER_TILE_NAMES.has(tileName)
+}
+
+interface InputKeys {
+  forward: boolean
+  backward: boolean
+  left: boolean
+  right: boolean
+}
+
+interface SpawnInfo {
+  x: number
+  z: number
+  heading: number
+}
+
+interface BuildingInfo {
+  meshName: string
+  tile: { gridX: number; gridZ: number }
+  rotationY: number
+}
+
+interface GridInfo {
+  gridRadius: number
+  worldOffset: { x: number; z: number }
+  decorations: { buildings: BuildingInfo[] } | null
 }
 
 /**
@@ -28,7 +55,28 @@ function isWaterTile(tileName) {
  * Checks globalCells to prevent sailing onto land.
  */
 export class PirateShip {
-  constructor(scene) {
+  scene: Scene
+  model: Group | null
+  heading: number
+  speed: number
+  position: Vector3
+  _time: number
+  _aground: boolean
+  _smoothRoll: number
+  _waterClipPlane!: Plane
+  _maskMaterial!: MeshBasicNodeMaterial
+  _savedMaterials!: Map<unknown, Material>
+
+  // References set by App after HexMap init
+  globalCells: Map<string, SerializedCell> | null
+  grids: Map<string, GridInfo> | null
+
+  _keys: InputKeys
+  _onKeyDown: (e: KeyboardEvent) => void
+  _onKeyUp: (e: KeyboardEvent) => void
+  _joystick: VirtualJoystick
+
+  constructor(scene: Scene) {
     this.scene = scene
     this.model = null
     this.heading = 0 // radians, 0 = +Z
@@ -36,18 +84,20 @@ export class PirateShip {
     this.position = new Vector3(0, WATER_Y, 0)
     this._time = 0
     this._aground = false
+    this._smoothRoll = 0 // smoothed heel angle for gradual tilting
 
     // References set by App after HexMap init
     this.globalCells = null
-    this.grids = null // Map of HexGrid instances (for finding shipyards)
+    this.grids = null
 
     // Input state
     this._keys = { forward: false, backward: false, left: false, right: false }
     this._onKeyDown = this._handleKey.bind(this, true)
     this._onKeyUp = this._handleKey.bind(this, false)
+    this._joystick = new VirtualJoystick()
   }
 
-  async init() {
+  async init(): Promise<void> {
     const loader = new GLTFLoader()
     const gltf = await loader.loadAsync('./assets/models/sail-ship.glb')
     this.model = gltf.scene
@@ -60,33 +110,38 @@ export class PirateShip {
     this._savedMaterials = new Map()
 
     this.model.traverse((child) => {
-      if (child.isMesh) {
-        child.castShadow = true
-        child.receiveShadow = true
+      const mesh = child as unknown as { isMesh?: boolean; castShadow?: boolean; receiveShadow?: boolean; material?: Material & { clippingPlanes?: Plane[] } }
+      if (mesh.isMesh) {
+        mesh.castShadow = true
+        mesh.receiveShadow = true
         // Clip at water surface so hull below waterline is hidden
-        child.material.clippingPlanes = [this._waterClipPlane]
+        if (mesh.material) {
+          mesh.material.clippingPlanes = [this._waterClipPlane]
+        }
       }
     })
     // Scale to fit hex tiles — adjust as needed
     this.model.scale.setScalar(0.5)
     this.model.position.copy(this.position)
     this.scene.add(this.model)
+
   }
 
   /**
    * Swap ship materials to black for water mask pass, or restore originals.
    */
-  setWaterMaskMode(enabled) {
+  setWaterMaskMode(enabled: boolean): void {
     if (!this.model) return
     if (enabled) {
       this.model.traverse((child) => {
-        if (child.isMesh) {
-          this._savedMaterials.set(child, child.material)
-          child.material = this._maskMaterial
+        const mesh = child as unknown as { isMesh?: boolean; material?: Material }
+        if (mesh.isMesh) {
+          this._savedMaterials.set(child, mesh.material!)
+          mesh.material = this._maskMaterial
         }
       })
     } else {
-      for (const [mesh, mat] of this._savedMaterials) mesh.material = mat
+      for (const [mesh, mat] of this._savedMaterials) (mesh as { material: Material }).material = mat
       this._savedMaterials.clear()
     }
   }
@@ -94,9 +149,8 @@ export class PirateShip {
   /**
    * Find a shipyard decoration across all grids and return the world position
    * of the water tile in front of it (where the ship should spawn).
-   * Returns {x, z, heading} or null if no shipyard exists.
    */
-  _findShipyardSpawn() {
+  _findShipyardSpawn(): SpawnInfo | null {
     if (!this.grids) return null
 
     for (const grid of this.grids.values()) {
@@ -126,12 +180,11 @@ export class PirateShip {
 
   /**
    * Find the world position of the nearest water tile to the ship.
-   * Returns {x, z} or null if no water tiles exist.
    */
-  _findNearestWater() {
+  _findNearestWater(): { x: number; z: number } | null {
     if (!this.globalCells) return null
 
-    let bestPos = null
+    let bestPos: { x: number; z: number } | null = null
     let bestDist = Infinity
 
     for (const cell of this.globalCells.values()) {
@@ -151,10 +204,11 @@ export class PirateShip {
     return bestPos
   }
 
-  enable() {
+  enable(): void {
     window.addEventListener('keydown', this._onKeyDown)
     window.addEventListener('keyup', this._onKeyUp)
     if (this.model) this.model.visible = true
+    if (this._joystick._el) this._joystick._el.style.display = ''
 
     // Try to spawn at a shipyard, then nearest water, then stay put
     const shipyard = this._findShipyardSpawn()
@@ -175,16 +229,17 @@ export class PirateShip {
     if (this.model) this.model.position.copy(this.position)
   }
 
-  disable() {
+  disable(): void {
     window.removeEventListener('keydown', this._onKeyDown)
     window.removeEventListener('keyup', this._onKeyUp)
     this._keys.forward = this._keys.backward = this._keys.left = this._keys.right = false
     this.speed = 0
     this._aground = false
     if (this.model) this.model.visible = false
+    if (this._joystick._el) this._joystick._el.style.display = 'none'
   }
 
-  _handleKey(down, e) {
+  _handleKey(down: boolean, e: KeyboardEvent): void {
     switch (e.code) {
       case 'KeyW': case 'ArrowUp':    this._keys.forward = down; break
       case 'KeyS': case 'ArrowDown':  this._keys.backward = down; break
@@ -193,7 +248,7 @@ export class PirateShip {
     }
   }
 
-  _readGamepad() {
+  _readGamepad(): { x: number; y: number } {
     const gamepads = navigator.getGamepads?.()
     if (!gamepads) return { x: 0, y: 0 }
     for (const gp of gamepads) {
@@ -212,7 +267,7 @@ export class PirateShip {
    * Positions outside any known tile (open space) are also treated as water
    * so the ship can sail in unexplored/empty areas.
    */
-  _isWaterAt(wx, wz) {
+  _isWaterAt(wx: number, wz: number): boolean {
     if (!this.globalCells) return true
     const { col, row } = worldToOffset(wx, wz)
     const { q, r, s } = offsetToCube(col, row)
@@ -220,18 +275,20 @@ export class PirateShip {
     const cell = this.globalCells.get(key)
     if (!cell) return true // no tile = open water / unexplored
     const def = TILE_LIST[cell.type]
-    return def && isWaterTile(def.name)
+    return def != null && isWaterTile(def.name)
   }
 
-  update(dt) {
+  update(dt: number): void {
     if (!this.model) return
 
     this._time += dt
 
-    // Combine keyboard + gamepad input
+    // Combine keyboard + gamepad + virtual joystick input
     const gp = this._readGamepad()
-    let turnInput = (this._keys.left ? -1 : 0) + (this._keys.right ? 1 : 0) + gp.x
-    let thrustInput = (this._keys.forward ? 1 : 0) + (this._keys.backward ? -1 : 0) - gp.y
+    const jx = this._joystick.x ?? 0
+    const jy = this._joystick.y ?? 0
+    let turnInput = (this._keys.left ? -1 : 0) + (this._keys.right ? 1 : 0) + gp.x + jx
+    let thrustInput = (this._keys.forward ? 1 : 0) + (this._keys.backward ? -1 : 0) - gp.y - jy
 
     turnInput = MathUtils.clamp(turnInput, -1, 1)
     thrustInput = MathUtils.clamp(thrustInput, -1, 1)
@@ -290,11 +347,13 @@ export class PirateShip {
 
     // Idle side-to-side rocking (always present, slower than bob)
     const idleRock = Math.sin(this._time * ROCK_SPEED) * ROCK_AMOUNT
-    // Heel into turns — proportional to turn rate and speed
-    const turnRoll = effectiveTurn * 8
-    this.model.rotation.z = idleRock + turnRoll
+    // Heel into turns — smoothed for gradual tilt
+    const targetRoll = turnInput * speedRatio * 0.3
+    this._smoothRoll = MathUtils.lerp(this._smoothRoll, targetRoll, 1 - Math.exp(-3 * dt))
+    this.model.rotation.z = idleRock + this._smoothRoll
 
     // Gentle pitch from bobbing
     this.model.rotation.x = Math.cos(this._time * BOB_SPEED) * 0.02
+
   }
 }

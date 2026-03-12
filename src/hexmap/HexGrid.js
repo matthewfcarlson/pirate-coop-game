@@ -332,7 +332,8 @@ export class HexGrid {
     if (this.placeholder) {
       this.placeholder.fadeIn(delay)
     }
-    if (this.outline) {
+    // Only show outline for placeholder grids; populated grids have it off by default
+    if (this.outline && this.state === HexGridState.PLACEHOLDER) {
       clearTimeout(this._outlineFadeTimer)
       gsap.killTweensOf(this.outline.material)
       this.outline.visible = false
