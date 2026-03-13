@@ -3,16 +3,16 @@ import {
   Float32BufferAttribute,
   Mesh,
   MeshBasicNodeMaterial,
+  AdditiveBlending,
   DoubleSide,
   Scene,
 } from 'three/webgpu'
 import { attribute, uniform, vec3, float } from 'three/tsl'
 
-const TRAIL_LENGTH = 50
-const V_SPREAD = 4.0          // max perpendicular spread of each V arm at tail
-const ARM_WIDTH_START = 0.08   // ribbon width at ship stern
-const ARM_WIDTH_END = 0.4      // ribbon width at tail end
-const WAKE_Y = 0.925           // just above water surface (0.92)
+const TRAIL_LENGTH = 80          // frames of history (longer = longer wake)
+const WAKE_Y = 0.925             // just above water surface (0.92)
+const INNER_OFFSET = 0.6         // lateral distance of each arm's inner edge from centre
+const OUTER_SPREAD = 7.0         // max lateral spread of each arm's outer edge at tail
 
 interface TrailPoint {
   x: number
@@ -22,6 +22,13 @@ interface TrailPoint {
 
 /**
  * V-shaped wake trail behind the pirate ship.
+ *
+ * Each arm is a ribbon whose inner edge follows the ship's actual curved path
+ * (so it naturally bends when the ship turns) and whose outer edge fans out
+ * laterally with age, producing the characteristic widening-V silhouette.
+ * Both arms start already offset from the ship centre so there is no
+ * single-stem "Y" artefact at the stern.
+ *
  * Rendered in the water layer (additive compositing).
  */
 export class ShipWake {
@@ -62,11 +69,10 @@ export class ShipWake {
     const material = new MeshBasicNodeMaterial({
       transparent: true,
       depthWrite: false,
+      blending: AdditiveBlending,
       side: DoubleSide,
     })
     const vAlpha = attribute('aAlpha')
-    // MeshBasicNodeMaterial has no emissiveNode — put brightness in colorNode directly.
-    // Water layer compositing is additive: withAO + waterRT.rgb * waterRT.a * waterMask
     material.colorNode = vec3(1, 1, 1).mul(vAlpha).mul(this._intensityUniform).mul(0.6)
     material.opacityNode = float(1)
 
@@ -90,32 +96,38 @@ export class ShipWake {
     const vertsPerArm = TRAIL_LENGTH * 2
 
     for (let arm = 0; arm < 2; arm++) {
-      const sign = arm === 0 ? -1 : 1
+      const sign = arm === 0 ? -1 : 1  // left / right
       const base = arm * vertsPerArm
 
       for (let i = 0; i < TRAIL_LENGTH; i++) {
         const p = i < len ? this._trail[i] : this._trail[len - 1]
-        const t = i / (TRAIL_LENGTH - 1)
+        const t = i / (TRAIL_LENGTH - 1)  // 0 = stern (newest), 1 = tail (oldest)
 
-        // Right vector perpendicular to heading
+        // Right vector perpendicular to the heading recorded at this historical moment.
+        // Using the historical heading means the arms smoothly follow the ship's curve
+        // rather than kinking at the current ship orientation.
         const rx = Math.cos(p.heading)
         const rz = -Math.sin(p.heading)
 
-        // Arm center: spread perpendicular to heading
-        const spread = t * V_SPREAD * sign
-        const cx = p.x + rx * spread
-        const cz = p.z + rz * spread
+        // Inner edge: stays close to the actual ship path — this is what gives the
+        // ribbon its curve when the ship has been turning.
+        const innerOff = INNER_OFFSET * sign
 
-        // Ribbon half-width
-        const w = ARM_WIDTH_START + t * (ARM_WIDTH_END - ARM_WIDTH_START)
+        // Outer edge: fans progressively further from the centreline with age,
+        // creating the widening-V silhouette.  At the stern (t=0) it equals
+        // innerOff so the ribbon starts with zero width; by the tail (t=1) it
+        // has spread OUTER_SPREAD world units from the centre.
+        const outerOff = (INNER_OFFSET + t * OUTER_SPREAD) * sign
 
         const vi = base + i * 2
-        posAttr.setXYZ(vi, cx - rx * w, WAKE_Y, cz - rz * w)
-        posAttr.setXYZ(vi + 1, cx + rx * w, WAKE_Y, cz + rz * w)
+        posAttr.setXYZ(vi,     p.x + rx * innerOff, WAKE_Y, p.z + rz * innerOff)
+        posAttr.setXYZ(vi + 1, p.x + rx * outerOff, WAKE_Y, p.z + rz * outerOff)
 
-        const alpha = (1 - t) * (1 - t)
-        alphaAttr.setX(vi, alpha)
-        alphaAttr.setX(vi + 1, alpha)
+        // Alpha: full brightness right at the stern, gentle power-curve fade toward
+        // the tail so the foam looks like it dissolves rather than cuts off.
+        const alpha = Math.pow(1 - t, 1.5)
+        alphaAttr.setX(vi,     alpha)
+        alphaAttr.setX(vi + 1, alpha * 0.2)  // outer edge fades faster → soft feathered edge
       }
     }
 

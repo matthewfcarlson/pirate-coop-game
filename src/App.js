@@ -17,6 +17,7 @@ import { Pointer } from './lib/Pointer.js'
 import { GUIManager } from './GUI.js'
 import { HexMap } from './hexmap/HexMap.js'
 import { PirateShip } from './PirateShip.js'
+import { ShipWake } from './ShipWake.js'
 import { Lighting } from './Lighting.js'
 import { PostFX } from './PostFX.js'
 import { WavesMask } from './hexmap/effects/WavesMask.js'
@@ -71,6 +72,8 @@ export class App {
     this.buildMode = false
     this.mode = 'pirate'
     this.pirateShip = null
+    this.onReadyToShow = null
+    this.shipWake = null
 
     if (App.instance != null) {
       console.warn('App instance already exists')
@@ -132,25 +135,15 @@ export class App {
     this.city._currentSeed = seed
     await this.city.init()
 
-    // Restore saved map state if available (only if there are populated cells)
-    if (savedState && savedState.cells.length > 0) {
-      console.log(`%c[RESTORE] Restoring ${savedState.cells.length} cells from session`, 'color: green')
-      await this.city.restoreFromState(savedState)
-    }
-
-    // If no saved state, auto-build the full map
-    if (!savedState || savedState.cells.length === 0) {
-      await this.city.autoBuild([
-        [0,0],[0,-1],[1,-1],[1,0],[0,1],[-1,0],[-1,-1],[-1,-2],[0,-2],[1,-2],[2,-1],[2,0],[2,1],[1,1],[0,2],[-1,1],[-2,1],[-2,0],[-2,-1]
-      ], { animate: false })
-    }
-
     // Pirate ship (enabled by default)
     this.pirateShip = new PirateShip(this.scene)
     this.pirateShip.globalCells = this.city.globalCells
     this.pirateShip.grids = this.city.grids
     await this.pirateShip.init()
     this.pirateShip.enable()
+
+    this.shipWake = new ShipWake(this.scene)
+    this.shipWake.init()
 
     // Water mask: swap tile materials to unlit B&W mask material for mask RT render
     this._savedMats = new Map()
@@ -316,7 +309,7 @@ export class App {
     this.wavesMask.render(this.scene, tileMeshes, this.city.waterPlane, this.city.globalCells)
     this.postFX.setOverlayObjects(this.city.getOverlayObjects())
 
-    this.postFX.setWaterObjects(this.city.getWaterObjects())
+    this.postFX.setWaterObjects([...this.city.getWaterObjects(), this.shipWake.mesh])
     this.postFX.render()
 
     this.timer.connect(document)
@@ -335,6 +328,25 @@ export class App {
       }
     }
     requestAnimationFrame(loop)
+
+    // Signal that assets are loaded and the render loop is running — caller can
+    // now hide the loading overlay and fade in so the build is visible.
+    await this.onReadyToShow?.()
+
+    // Restore saved map state or build the world for the first time.
+    // animate: true so tile drops are visible during the initial load.
+    if (savedState && savedState.cells.length > 0) {
+      console.log(`%c[RESTORE] Restoring ${savedState.cells.length} cells from session`, 'color: green')
+      await this.city.restoreFromState(savedState)
+    } else {
+      await this.city.autoBuild([
+        [0,0],[0,-1],[1,-1],[1,0],[0,1],[-1,0],[-1,-1],[-1,-2],[0,-2],[1,-2],[2,-1],[2,0],[2,1],[1,1],[0,2],[-1,1],[-2,1],[-2,0],[-2,-1]
+      ], { animate: true })
+    }
+
+    // After the initial build, render the wave mask and fade the water effects in.
+    // (onTilesChanged is suppressed during autoBuild, so we trigger it manually here.)
+    this.city.onTilesChanged?.(Promise.resolve())
   }
 
   initCamera() {
@@ -560,7 +572,11 @@ export class App {
     if (this.mode === 'pirate' && this.pirateShip) {
       this.pirateShip.update(dt)
       const shipPos = this.pirateShip.position
-      // Update wake shader uniforms
+      // Update wake geometry trail
+      if (this.shipWake) {
+        this.shipWake.update(shipPos.x, shipPos.z, this.pirateShip.heading, this.pirateShip.speed, 5)
+      }
+      // Update wake shader uniforms (subtle water-surface highlight)
       if (this.city._wakeX) {
         this.city._wakeX.value = shipPos.x
         this.city._wakeZ.value = shipPos.z
@@ -607,7 +623,7 @@ export class App {
     }
     postFX.setWaterMaskObjects(maskObjects)
     postFX.setOverlayObjects(this.city.getOverlayObjects())
-    postFX.setWaterObjects(this.city.getWaterObjects())
+    postFX.setWaterObjects([...this.city.getWaterObjects(), ...(this.shipWake?.mesh ? [this.shipWake.mesh] : [])])
 
     postFX.render()
 

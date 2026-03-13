@@ -6,7 +6,8 @@ import { worldToOffset, getWorldPos } from './hexmap/HexGridConnector.js'
 import { offsetToCube, cubeKey, cubeToOffset } from './hexmap/HexWFCCore.js'
 import type { SerializedCell } from './hexmap/MapStorage.js'
 
-const WATER_Y = 0.92
+const WATER_Y = 0.92   // water surface level (used for clip plane)
+const SHIP_Y = 0.6     // ship riding height — lower than surface so hull is partially submerged
 const SHIP_MAX_SPEED = 5     // top speed (world units/sec)
 const SHIP_ACCEL = 1.5       // how fast the ship builds speed
 const SHIP_DECEL = 0.6       // natural drag when not thrusting
@@ -81,7 +82,7 @@ export class PirateShip {
     this.model = null
     this.heading = 0 // radians, 0 = +Z
     this.speed = 0
-    this.position = new Vector3(0, WATER_Y, 0)
+    this.position = new Vector3(0, SHIP_Y, 0)
     this._time = 0
     this._aground = false
     this._smoothRoll = 0 // smoothed heel angle for gradual tilting
@@ -223,7 +224,7 @@ export class PirateShip {
         this.position.z = wp.z
       }
     }
-    this.position.y = WATER_Y
+    this.position.y = SHIP_Y
     this._aground = false
     this.speed = 0
     if (this.model) this.model.position.copy(this.position)
@@ -340,7 +341,7 @@ export class PirateShip {
     }
 
     // Bob on water
-    this.position.y = WATER_Y + Math.sin(this._time * BOB_SPEED) * BOB_AMOUNT
+    this.position.y = SHIP_Y + Math.sin(this._time * BOB_SPEED) * BOB_AMOUNT
 
     this.model.position.copy(this.position)
     this.model.rotation.y = this.heading

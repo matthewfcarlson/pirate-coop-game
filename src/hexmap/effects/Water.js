@@ -7,7 +7,7 @@ import {
   LinearFilter,
   Color,
 } from 'three/webgpu'
-import { uniform, vec3, vec2, texture, positionWorld, mx_noise_float, float, clamp, time as tslTime, sin, cos, mix, dot } from 'three/tsl'
+import { uniform, vec3, vec2, texture, positionWorld, mx_noise_float, float, clamp, time as tslTime, sin, cos, mix } from 'three/tsl'
 
 /**
  * Water plane with caustic sparkles and coast wave bands.
@@ -152,35 +152,9 @@ export class Water {
     // Cove debug: red overlay where cove mask is active
     const coveDebug = vec3(coveSample, 0, 0).mul(this._coveShow)
 
-    // ---- Wake: V-shaped trail computed analytically from ship uniforms ----
-    // diff = fragment world pos minus ship pos (in X/Z plane)
-    const wakeDiff = vec2(positionWorld.x.sub(this._wakeX), positionWorld.z.sub(this._wakeZ))
-    const wSin = sin(this._wakeHeading)
-    const wCos = cos(this._wakeHeading)
-    // along: positive = behind ship,  perp: signed lateral offset
-    const wAlong = dot(wakeDiff, vec2(wSin.negate(), wCos.negate()))
-    const wPerp  = dot(wakeDiff, vec2(wCos, wSin.negate()))
-    // V-arm centres spread outward as we go further behind the ship
-    const WAKE_TAN = float(0.42)   // tan ~23° — V half-angle
-    const WAKE_LEN = float(18.0)   // max trail length (world units)
-    const WAKE_W   = float(0.28)   // arm half-width at stern
-    const wArmW = WAKE_W.add(wAlong.max(float(0)).mul(0.035)) // widens with distance
-    const wArm1 = float(1).sub(wPerp.sub(wAlong.mul(WAKE_TAN)).abs().div(wArmW)).clamp(0, 1)
-    const wArm2 = float(1).sub(wPerp.add(wAlong.mul(WAKE_TAN)).abs().div(wArmW)).clamp(0, 1)
-    const wShape = wArm1.max(wArm2)
-    // Fade: ramp in from stern, fade out over trail length
-    const wBehind = wAlong.mul(float(4)).clamp(0, 1)          // smooth mask: only behind ship
-    const wFade   = float(1).sub(wAlong.div(WAKE_LEN).clamp(0, 1))
-    const wTaper  = wAlong.div(float(2)).clamp(0, 1)           // thin at stern, full by 2u back
-    // Foam texture: reuse break noise at higher frequency
-    const wakeNoise = mx_noise_float(vec3(
-      positionWorld.x.mul(2.5),
-      positionWorld.z.mul(2.5),
-      tslTime.mul(0.4)
-    )).mul(0.5).add(0.5)
-    const wIntensity = wShape.mul(wBehind).mul(wFade).mul(wTaper)
-      .mul(this._wakeSpeed).mul(wakeNoise).mul(0.85)
-    const wakeEmit = vec3(wIntensity, wIntensity, wIntensity)
+    // Wake foam is handled by the ShipWake geometry mesh rendered in the same
+    // water RT pass — no analytical shader wake needed here.
+    const wakeEmit = vec3(0, 0, 0)
 
     // Additive compositing in PostFX — caustic water + coast waves + gradient tint
     const gradientColor = vec3(this._waveGradientColor)

@@ -13,15 +13,16 @@ async function init() {
   }
 
   app = new App(canvas)
+
+  // Once assets are loaded and the render loop is running, hide the loading
+  // overlay so the tile-drop build animation is visible.
+  app.onReadyToShow = () => {
+    loadingEl.style.display = 'none'
+    app.fadeIn(500)
+  }
+
   await app.init()
 
-  // Hide loading overlay
-  loadingEl.style.display = 'none'
-
-  // Fade in scene
-  app.fadeIn(1000)
-
-  // Start intro build animation
   app.city.startIntroAnimation(app.camera, app.controls, 4)
 }
 
