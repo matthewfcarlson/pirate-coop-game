@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite'
 import basicSsl from '@vitejs/plugin-basic-ssl'
 
+import { cloudflare } from "@cloudflare/vite-plugin";
+
 const fullReloadAlways = {
   name: 'full-reload-always',
   handleHotUpdate({ server }) {
@@ -12,7 +14,7 @@ const fullReloadAlways = {
 export default defineConfig({
   root: '',
   base: './',
-  plugins: [fullReloadAlways, basicSsl()],
+  plugins: [fullReloadAlways, basicSsl(), cloudflare()],
   server: {
     port: 5176,
     watch: {
